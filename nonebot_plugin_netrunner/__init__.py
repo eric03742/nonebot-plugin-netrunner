@@ -1,8 +1,14 @@
-from nonebot.rule import to_me
-from nonebot.plugin import on_command, PluginMetadata
-from nonebot.adapters import Message
-from nonebot.params import CommandArg
+import re
+import httpx
+import asyncio
 
+from nonebot.adapters import Bot, Event
+from nonebot.params import T_State
+from nonebot.plugin import PluginMetadata
+from nonebot.plugin.on import on_regex
+from nonebot.rule import to_me
+
+from nonebot.adapters import MessageSegment
 
 __plugin_meta__ = PluginMetadata(
     name="Netrunner 矩阵潜袭卡查",
@@ -13,13 +19,34 @@ __plugin_meta__ = PluginMetadata(
     extra={},
 )
 
+runner = on_regex(r"\[\[(.+?)\]\]", re.IGNORECASE, to_me())
+delay = 0.5
 
-weather = on_command("天气", rule=to_me())
+@runner.handle()
+async def runner_handler(bot: Bot, event: Event, state: T_State):
+    words: list[str] = re.compile(r"\[\[(.+?)]]").findall(str(event.get_message()))
+    if not words:
+        return
 
-@weather.handle()
-async def weather_handler(arg: Message = CommandArg()):
-    location = arg.extract_plain_text()
-    if location:
-        await weather.finish(f"今天 {location} 的天气是...")
-    else:
-        await weather.finish("请输入地名")
+    for w in words:
+        res = httpx.get(f"https://api-preview.netrunnerdb.com/api/v3/public/cards?filter[search]={w}")
+        if res.status_code != httpx.codes.OK:
+            await runner.send("与 NetrunnerDB 的通信失败，可能是网络原因，请稍后再试！")
+        else:
+            raw = res.json()
+            info = ''
+            try:
+                if isinstance(raw, dict):
+                    data = raw.get('data')
+                    if isinstance(data, list) and len(data) > 0:
+                        card = data[0]
+                        attribute = card['attributes']
+                        info = f"{attribute['title']}: {attribute['text']}"
+            except KeyError as err:
+                info = 'NetrunnerDB 返回的数据格式出错！'
+            finally:
+                if len(info) > 0:
+                    await runner.send(info)
+                else:
+                    await runner.send(f'没有找到与 {w} 有关的卡牌！')
+                await asyncio.sleep(delay)
