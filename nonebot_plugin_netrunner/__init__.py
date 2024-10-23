@@ -6,7 +6,7 @@ import re
 from nonebot.plugin import PluginMetadata
 from nonebot.plugin.on import on_regex, on_command
 from nonebot.rule import to_me
-from nonebot.adapters.onebot.v11 import Event, Message, MessageSegment, PRIVATE_FRIEND
+from nonebot.adapters.onebot.v11 import Event, Message, MessageSegment, PRIVATE_FRIEND, GROUP
 
 # 插件的元数据
 
@@ -36,12 +36,11 @@ async def ping_handler(event: Event):
 
 # 群聊卡查消息命令
 
-runner = on_regex(r"【(.+?)】", re.IGNORECASE, to_me())
-delay = 0.5
+runner = on_regex(r"【(.+?)】", re.IGNORECASE, permission=GROUP, priority=10)
 
 @runner.handle()
 async def runner_handler(event: Event):
-    words: list[str] = re.compile(r"【(.+?)】").findall(str(event.get_message()))
+    words: list[str] = re.compile(r"【(.+?)】").findall(event.get_message().extract_plain_text())
     if not words:
         return
 
@@ -72,4 +71,4 @@ async def runner_handler(event: Event):
                     await runner.send(msg)
                 else:
                     await runner.send(f'没有找到与 {w} 有关的卡牌！')
-                await asyncio.sleep(delay)
+                await asyncio.sleep(0.5)
