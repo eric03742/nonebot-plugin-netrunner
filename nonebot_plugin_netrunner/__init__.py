@@ -6,7 +6,7 @@ import re
 from nonebot.plugin import PluginMetadata
 from nonebot.plugin.on import on_regex, on_command
 from nonebot.rule import to_me
-from nonebot.adapters.onebot.v11 import Event, PRIVATE_FRIEND
+from nonebot.adapters.onebot.v11 import Event, Message, MessageSegment, PRIVATE_FRIEND
 
 # 插件的元数据
 
@@ -36,12 +36,12 @@ async def ping_handler(event: Event):
 
 # 群聊卡查消息命令
 
-runner = on_regex(r"\[\[(.+?)\]\]", re.IGNORECASE, to_me())
+runner = on_regex(r"【(.+?)】", re.IGNORECASE, to_me())
 delay = 0.5
 
 @runner.handle()
 async def runner_handler(event: Event):
-    words: list[str] = re.compile(r"\[\[(.+?)]]").findall(str(event.get_message()))
+    words: list[str] = re.compile(r"【(.+?)】").findall(str(event.get_message()))
     if not words:
         return
 
@@ -52,18 +52,24 @@ async def runner_handler(event: Event):
         else:
             raw = res.json()
             info = ''
+            card_id = 0
             try:
                 if isinstance(raw, dict):
                     data = raw.get('data')
                     if isinstance(data, list) and len(data) > 0:
                         card = data[0]
                         attribute = card['attributes']
-                        info = f"{attribute['title']}: {attribute['text']}"
+                        info = f"{attribute['title']}\n{attribute['text']}"
+                        card_id = int(card['latest_printing_id'])
             except KeyError as _:
                 info = 'NetrunnerDB 返回的数据格式出错！'
             finally:
-                if len(info) > 0:
-                    await runner.send(info)
+                if card_id > 0:
+                    msg = Message.template("{}\n{}").format(
+                        MessageSegment.text(info),
+                        MessageSegment.image(f'https://card-images.netrunnerdb.com/v2/medium/{card_id}.jpg', timeout=30)
+                    )
+                    await runner.send(msg)
                 else:
                     await runner.send(f'没有找到与 {w} 有关的卡牌！')
                 await asyncio.sleep(delay)
