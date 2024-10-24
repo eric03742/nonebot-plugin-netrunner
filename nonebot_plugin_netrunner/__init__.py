@@ -1,12 +1,15 @@
 import asyncio
 import httpx
 import nonebot
+import os
 import re
 
 from nonebot.plugin import PluginMetadata
 from nonebot.plugin.on import on_regex, on_command
 from nonebot.rule import to_me
 from nonebot.adapters.onebot.v11 import Event, Message, MessageSegment, PRIVATE_FRIEND, GROUP
+
+from .config import Config
 
 # 插件的元数据
 
@@ -20,16 +23,19 @@ __plugin_meta__ = PluginMetadata(
     extra={},
 )
 
+# 配置
+
+bot_config = nonebot.get_driver().config
+plugin_config = nonebot.get_plugin_config(Config)
+
 # 管理员命令，用于检查服务可用性
 
 ping = on_command("ping", rule=to_me(), permission=PRIVATE_FRIEND, priority=10)
 
 @ping.handle()
 async def ping_handler(event: Event):
-    driver = nonebot.get_driver()
-    masters = driver.config.superusers
     user = event.get_user_id()
-    if not user in masters:
+    if not user in bot_config.superusers:
         return
 
     await ping.send(message="pong")
@@ -45,7 +51,8 @@ async def runner_handler(event: Event):
         return
 
     for w in words:
-        res = httpx.get(f"https://api-preview.netrunnerdb.com/api/v3/public/cards?filter[search]={w}")
+        url = f"https://api-preview.netrunnerdb.com/api/v3/public/cards?filter[search]={w}"
+        res = httpx.get(url)
         if res.status_code != httpx.codes.OK:
             await runner.send("与 NetrunnerDB 的通信失败，可能是网络原因，请稍后再试！")
         else:
@@ -59,14 +66,16 @@ async def runner_handler(event: Event):
                         card = data[0]
                         attribute = card['attributes']
                         info = f"{attribute['title']}\n{attribute['text']}"
-                        card_id = int(card['latest_printing_id'])
+                        card_id = int(attribute['latest_printing_id'])
             except KeyError as _:
                 info = 'NetrunnerDB 返回的数据格式出错！'
             finally:
                 if card_id > 0:
+                    address = os.path.join(plugin_config.netrunner_resources_dir, f'{card_id:05d}.png')
+                    img = f'file://{address}'
                     msg = Message.template("{}\n{}").format(
                         MessageSegment.text(info),
-                        MessageSegment.image(f'https://card-images.netrunnerdb.com/v2/medium/{card_id}.jpg', timeout=30)
+                        MessageSegment.image(img)
                     )
                     await runner.send(msg)
                 else:
