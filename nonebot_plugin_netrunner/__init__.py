@@ -1,13 +1,14 @@
-import asyncio
-import httpx
 import nonebot
 import os
 import re
 
+from meilisearch import Client
+from meilisearch.index import Index
+from nonebot import logger
 from nonebot.plugin import PluginMetadata
 from nonebot.plugin.on import on_regex, on_command
-from nonebot.rule import to_me
-from nonebot.adapters.onebot.v11 import Event, Message, MessageSegment, PRIVATE_FRIEND, GROUP
+from nonebot.rule import to_me, is_type
+from nonebot.adapters.onebot.v11 import Event, Message, MessageSegment, PRIVATE_FRIEND, GROUP, GroupMessageEvent
 
 from .config import Config
 
@@ -25,8 +26,20 @@ __plugin_meta__ = PluginMetadata(
 
 # 配置
 
-bot_config = nonebot.get_driver().config
-plugin_config = nonebot.get_plugin_config(Config)
+driver = nonebot.get_driver()
+conf = nonebot.get_plugin_config(Config)
+index: Index
+
+@driver.on_startup
+async def connect_database():
+    global index
+    host = conf.netrunner_database_host
+    port = conf.netrunner_database_port
+    token = conf.netrunner_database_master_key
+    client = Client(f'http://{host}:{port}', token)
+    logger.info(f'connect to meilisearch: {client.is_healthy()}')
+    index = client.get_index('netrunner')
+
 
 # 管理员命令，用于检查服务可用性
 
@@ -35,14 +48,14 @@ ping = on_command("ping", rule=to_me(), permission=PRIVATE_FRIEND, priority=10)
 @ping.handle()
 async def ping_handler(event: Event):
     user = event.get_user_id()
-    if not user in bot_config.superusers:
+    if not user in driver.config.superusers:
         return
 
     await ping.send(message="pong")
 
 # 群聊卡查消息命令
 
-runner = on_regex(r"【(.+?)】", re.IGNORECASE, permission=GROUP, priority=10)
+runner = on_regex(r"【(.+?)】", re.IGNORECASE, rule=is_type(GroupMessageEvent), permission=GROUP, priority=10)
 
 @runner.handle()
 async def runner_handler(event: Event):
@@ -51,33 +64,38 @@ async def runner_handler(event: Event):
         return
 
     for w in words:
-        url = f"https://api-preview.netrunnerdb.com/api/v3/public/cards?filter[search]={w}"
-        res = httpx.get(url)
-        if res.status_code != httpx.codes.OK:
-            await runner.send("与 NetrunnerDB 的通信失败，可能是网络原因，请稍后再试！")
-        else:
-            raw = res.json()
-            info = ''
-            card_id = 0
-            try:
-                if isinstance(raw, dict):
-                    data = raw.get('data')
-                    if isinstance(data, list) and len(data) > 0:
-                        card = data[0]
-                        attribute = card['attributes']
-                        info = f"{attribute['title']}\n{attribute['text']}"
-                        card_id = int(attribute['latest_printing_id'])
-            except KeyError as _:
-                info = 'NetrunnerDB 返回的数据格式出错！'
-            finally:
-                if card_id > 0:
-                    address = os.path.join(plugin_config.netrunner_resources_dir, f'{card_id:05d}.png')
-                    img = f'file://{address}'
-                    msg = Message.template("{}\n{}").format(
-                        MessageSegment.text(info),
-                        MessageSegment.image(img)
-                    )
-                    await runner.send(msg)
-                else:
-                    await runner.send(f'没有找到与 {w} 有关的卡牌！')
-                await asyncio.sleep(0.5)
+        callback = index.search(w, {
+            'sort': ['code:desc']
+        })
+
+        if not callback:
+            await runner.send('数据库异常！')
+            continue
+
+        result = callback['hits']
+
+        if not result or len(result) <= 0:
+            await runner.send(f'没有找到与 {w} 有关的卡牌！')
+            continue
+
+        card = result[0]
+        card_code = card['code']
+        card_link = f'https://netrunnerdb.com/en/card/{card_code}'
+        card_name = card['cn_title']
+        if len(card_name) <= 0:
+            card_name = card['title']
+        card_word = card['cn_keywords']
+        if len(card_word) <= 0:
+            card_word = card['keywords']
+        card_text = card['cn_text']
+        if len(card_text) <= 0:
+            card_text = card['text']
+
+        info = f'{card_link}\n「{card_name}」：{card_word}\n{card_text}'
+        address = os.path.join(conf.netrunner_resources_dir, f'{card_code}.png')
+        img = f'file://{address}'
+        msg = Message.template("{}\n{}").format(
+            MessageSegment.text(info),
+            MessageSegment.image(img)
+        )
+        await runner.send(msg)
